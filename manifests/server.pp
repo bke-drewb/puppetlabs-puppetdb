@@ -27,14 +27,16 @@
 #                            Set to '0.0.0.0' to listen on all addresses.
 #   ['listen_port']        - The port on which the puppetdb web server should
 #                            accept HTTP requests (defaults to 8080).
-#   ['open_listen_port']   - If true, open the http listen port on the firewall. 
+#   ['open_listen_port']   - If true, open the http listen port on the firewall.
 #                            (defaults to false).
 #   ['ssl_listen_address'] - The address that the web server should bind to
 #                            for HTTPS requests.  (defaults to `$::clientcert`.)
 #                            Set to '0.0.0.0' to listen on all addresses.
 #   ['ssl_listen_port']    - The port on which the puppetdb web server should
 #                            accept HTTPS requests (defaults to 8081).
-#   ['open_ssl_listen_port'] - If true, open the ssl listen port on the firewall. 
+#   ['disable_ssl']        - If true, disable HTTPS and only serve
+#                            HTTP requests. Defaults to false.
+#   ['open_ssl_listen_port'] - If true, open the ssl listen port on the firewall.
 #                            (defaults to true).
 #   ['database']           - Which database backend to use; legal values are
 #                            `postgres` (default) or `embedded`.  (The `embedded`
@@ -51,7 +53,19 @@
 #                            (defaults to `puppetdb`; ignored for `embedded` db)
 #   ['database_name']      - The name of the database instance to connect to.
 #                            (defaults to `puppetdb`; ignored for `embedded` db)
-#   ['database_package']   - The puppetdb package name in the package manager
+#   ['node_ttl']           - The length of time a node can go without receiving
+#                            any new data before it's automatically deactivated.
+#                            (defaults to '0', which disables auto-deactivation)
+#                            This option is supported in PuppetDB >= 1.1.0.
+#   ['node_purge_ttl']     - The length of time a node can be deactivated before
+#                            it's deleted from the database.
+#                            (defaults to '0', which disables purging)
+#                            This option is supported in PuppetDB >= 1.2.0.
+#   ['report_ttl']         - The length of time reports should be stored before
+#                            being deleted.
+#                            (defaults to '7d', which is a 7-day period)
+#                            This option is supported in PuppetDB >= 1.1.0.
+#   ['puppetdb_package']   - The puppetdb package name in the package manager
 #   ['puppetdb_version']   - The version of the `puppetdb` package that should
 #                            be installed.  You may specify an explicit version
 #                            number, 'present', or 'latest'.  Defaults to
@@ -68,7 +82,10 @@
 #                            all TCP connections).
 #   ['confdir']            - The puppetdb configuration directory; defaults to
 #                            `/etc/puppetdb/conf.d`.
-#
+#   ['java_args']          - Java VM options used for overriding default Java VM
+#                            options specified in PuppetDB package.
+#                            (defaults to `{}`).
+#                            e.g. { '-Xmx' => '512m', '-Xms' => '256m' }
 # Actions:
 # - Creates and manages a puppetdb server
 #
@@ -86,6 +103,7 @@ class puppetdb::server(
   $open_listen_port        = $puppetdb::params::open_listen_port,
   $ssl_listen_address      = $puppetdb::params::ssl_listen_address,
   $ssl_listen_port         = $puppetdb::params::ssl_listen_port,
+  $disable_ssl             = $puppetdb::params::disable_ssl,
   $open_ssl_listen_port    = $puppetdb::params::open_ssl_listen_port,
   $database                = $puppetdb::params::database,
   $database_host           = $puppetdb::params::database_host,
@@ -93,12 +111,46 @@ class puppetdb::server(
   $database_username       = $puppetdb::params::database_username,
   $database_password       = $puppetdb::params::database_password,
   $database_name           = $puppetdb::params::database_name,
+  $node_ttl                = $puppetdb::params::node_ttl,
+  $node_purge_ttl          = $puppetdb::params::node_purge_ttl,
+  $report_ttl              = $puppetdb::params::report_ttl,
   $puppetdb_package        = $puppetdb::params::puppetdb_package,
   $puppetdb_version        = $puppetdb::params::puppetdb_version,
   $puppetdb_service        = $puppetdb::params::puppetdb_service,
   $manage_redhat_firewall  = $puppetdb::params::manage_redhat_firewall,
   $confdir                 = $puppetdb::params::confdir,
+  $java_args               = {}
 ) inherits puppetdb::params {
+
+  # Apply necessary suffix if zero is specified.
+  if $node_ttl == '0' {
+    $node_ttl_real = '0s'
+  } else {
+    $node_ttl_real = downcase($node_ttl)
+  }
+
+  # Validate node_ttl
+  validate_re ($node_ttl_real, ['^(\d)+[s,m,d]$'], "node_ttl is <${node_ttl}> which does not match the regex validation")
+
+  # Apply necessary suffix if zero is specified.
+  if $node_purge_ttl == '0' {
+    $node_purge_ttl_real = '0s'
+  } else {
+    $node_purge_ttl_real = downcase($node_purge_ttl)
+  }
+
+  # Validate node_purge_ttl
+  validate_re ($node_purge_ttl_real, ['^(\d)+[s,m,d]$'], "node_purge_ttl is <${node_purge_ttl}> which does not match the regex validation")
+
+  # Apply necessary suffix if zero is specified.
+  if $report_ttl == '0' {
+    $report_ttl_real = '0s'
+  } else {
+    $report_ttl_real = downcase($report_ttl)
+  }
+
+  # Validate report_ttl
+  validate_re ($report_ttl_real, ['^(\d)+[s,m,d]$'], "report_ttl is <${report_ttl}> which does not match the regex validation")
 
   package { $puppetdb_package:
     ensure => $puppetdb_version,
@@ -120,6 +172,9 @@ class puppetdb::server(
     database_username => $database_username,
     database_password => $database_password,
     database_name     => $database_name,
+    node_ttl          => $node_ttl,
+    node_purge_ttl    => $node_purge_ttl,
+    report_ttl        => $report_ttl,
     confdir           => $confdir,
     notify            => Service[$puppetdb_service],
   }
@@ -129,8 +184,26 @@ class puppetdb::server(
     listen_port         => $listen_port,
     ssl_listen_address  => $ssl_listen_address,
     ssl_listen_port     => $ssl_listen_port,
+    disable_ssl         => $disable_ssl,
     confdir             => $confdir,
     notify              => Service[$puppetdb_service],
+  }
+
+  if !empty($java_args) {
+    
+    create_resources(
+      'ini_subsetting',
+      puppetdb_create_subsetting_resource_hash(
+        $java_args,
+        { ensure  => present,
+          section => '',
+          key_val_separator => '=',
+          path => $puppetdb::params::puppetdb_initconf,
+          setting => 'JAVA_ARGS',
+          require => Package[$puppetdb_package],
+          notify => Service[$puppetdb_service],
+        })
+    )
   }
 
   service { $puppetdb_service:
